@@ -9,7 +9,7 @@
 #include "config.h"
 #include "patterns.h"
 
-const char* FW_VERSION = "1.0.0";
+const char* FW_VERSION = "1.1.3";
 const char* OTA_FEED = "translight-ota";
 
 WiFiClient wifiClient;
@@ -19,12 +19,11 @@ Preferences prefs;
 char deviceId[32] = "";
 
 bool isShowingReceived = false;
-bool blinkVisible = true;
-unsigned long lastBlinkAt = 0;
-const unsigned long BLINK_INTERVAL_MS = 800;
+const unsigned long BREATH_CYCLE_MS = 3000;
 
 int selectedIndex = 0;
 int currentReceivedIndex = -1;
+int currentReceivedHiddenIndex = -1;
 
 unsigned long receivedAt = 0;
 unsigned long displayTtlMs = 30UL * 60UL * 1000UL;
@@ -50,13 +49,32 @@ String inTopic() {
 }
 
 // ===== 表示 =====
-void drawPreset(int index) {
+uint32_t scaleColor(uint32_t color, float brightness) {
+  uint8_t r = (color >> 16) & 0xFF;
+  uint8_t g = (color >> 8) & 0xFF;
+  uint8_t b = color & 0xFF;
+  return ((uint32_t)(r * brightness) << 16) |
+         ((uint32_t)(g * brightness) << 8) |
+         (uint32_t)(b * brightness);
+}
+
+void drawPixelsBreathing(const uint32_t* pixels, float brightness) {
   for (int i = 0; i < 25; i++) {
-    M5.dis.drawpix(i, presets[index].pixels[i]);
+    M5.dis.drawpix(i, pixels[i] != OFF ? scaleColor(pixels[i], brightness) : OFF);
   }
 }
 
-void drawPresetShifted(int index, int yOffset) {
+void drawPixels(const uint32_t* pixels) {
+  for (int i = 0; i < 25; i++) {
+    M5.dis.drawpix(i, pixels[i]);
+  }
+}
+
+void drawPreset(int index) {
+  drawPixels(presets[index].pixels);
+}
+
+void drawPixelsShifted(const uint32_t* pixels, int yOffset) {
   M5.dis.clear();
 
   for (int y = 0; y < 5; y++) {
@@ -70,7 +88,7 @@ void drawPresetShifted(int index, int yOffset) {
       int srcIndex = srcY * 5 + x;
       int dstIndex = y * 5 + x;
 
-      uint32_t color = presets[index].pixels[srcIndex];
+      uint32_t color = pixels[srcIndex];
 
       if (color != OFF) {
         M5.dis.drawpix(dstIndex, color);
@@ -88,50 +106,85 @@ void flashColor(uint32_t color, int count) {
   }
 }
 
-void playSendAnimation(int index) {
+void animateSend(const uint32_t* pixels) {
   for (int offset = 0; offset >= -5; offset--) {
-    drawPresetShifted(index, offset);
+    drawPixelsShifted(pixels, offset);
     delay(120);
   }
+}
+
+void animateReceive(const uint32_t* pixels) {
+  for (int offset = -5; offset <= 0; offset++) {
+    drawPixelsShifted(pixels, offset);
+    delay(120);
+  }
+}
+
+void playSendAnimation(int index) {
+  animateSend(presets[index].pixels);
 }
 
 void playReceiveAnimation(int index) {
-  for (int offset = -5; offset <= 0; offset++) {
-    drawPresetShifted(index, offset);
-    delay(120);
+  animateReceive(presets[index].pixels);
+}
+
+void playRainbowOnPixels(const uint32_t* pixels) {
+  uint32_t rainbow[] = { RED, ORANGE, YELLOW, GREEN, CYAN, BLUE, PURPLE, PINK };
+  for (int step = 0; step < 24; step++) {
+    uint32_t color = rainbow[step % 8];
+    for (int i = 0; i < 25; i++) {
+      M5.dis.drawpix(i, pixels[i] != OFF ? color : OFF);
+    }
+    delay(80);
   }
 }
 
-void playSecretAnimation(int index) {
-  uint32_t colors[] = {
-    RED, ORANGE, YELLOW, GREEN, CYAN, BLUE, PURPLE, PINK
-  };
-
-  for (int step = 0; step < 24; step++) {
-    uint32_t color = colors[step % 8];
+void playMatchAnimation(int index) {
+  uint32_t rainbow[] = { RED, ORANGE, YELLOW, GREEN, CYAN, BLUE, PURPLE, PINK };
+  int step = 0;
+  while (true) {
+    M5.update();
+    if (M5.Btn.wasPressed()) break;
 
     for (int i = 0; i < 25; i++) {
       if (presets[index].pixels[i] != OFF) {
-        M5.dis.drawpix(i, color);
+        M5.dis.drawpix(i, rainbow[(step + i) % 8]);
       } else {
         M5.dis.drawpix(i, OFF);
       }
     }
-
-    delay(80);
+    step++;
+    delay(100);
   }
+  drawPreset(selectedIndex);
+}
 
+void playSecretAnimation(int index) {
+  playRainbowOnPixels(presets[index].pixels);
   drawPreset(index);
+}
+
+void playSecretAnimationHidden(int index) {
+  playRainbowOnPixels(hiddenPresets[index].pixels);
+  drawPixels(hiddenPresets[index].pixels);
 }
 
 // ===== payload =====
 int findPresetIndex(String value) {
   value.trim();
 
-  for (int i = 0; i < PRESET_COUNT; i++) {
-    if (value == presets[i].id) {
-      return i;
-    }
+  for (int i = 0; i < VISIBLE_PRESET_COUNT; i++) {
+    if (value == presets[i].id) return i;
+  }
+
+  return -1;
+}
+
+int findHiddenIndex(String value) {
+  value.trim();
+
+  for (int i = 0; i < HIDDEN_PRESET_COUNT; i++) {
+    if (value == hiddenPresets[i].id) return i;
   }
 
   return -1;
@@ -195,6 +248,11 @@ unsigned long extractTtlMs(String payload) {
   return (unsigned long)ttlSec * 1000UL;
 }
 
+bool sendMatch(int index) {
+  String payload = String("match:") + presets[index].id;
+  return mqtt.publish(outTopic().c_str(), payload.c_str());
+}
+
 bool sendPresetByIndex(int index) {
   String payload = String("{\"type\":\"preset\",\"value\":\"") +
                    presets[index].id +
@@ -213,11 +271,26 @@ String otaTopic() {
   return String(IO_USERNAME) + "/feeds/" + OTA_FEED;
 }
 
+void onOtaProgress(int current, int total) {
+  if (total <= 0) return;
+  int filled = (int)((long)current * 25 / total);
+  for (int i = 0; i < 25; i++) {
+    int row = 4 - i / 5;
+    bool leftToRight = (4 - row) % 2 == 0;
+    int x = leftToRight ? (i % 5) : (4 - i % 5);
+    int pixel = row * 5 + x;
+    M5.dis.drawpix(pixel, i < filled ? CYAN : OFF);
+  }
+}
+
 void performOta(String url) {
   url.trim();
   if (url.length() == 0) return;
 
-  M5.dis.fillpix(CYAN);
+  Serial.println("[OTA] start: " + url);
+  Serial.println("[OTA] free heap: " + String(ESP.getFreeHeap()));
+
+  M5.dis.clear();
 
   WiFiClientSecure secureClient;
   secureClient.setInsecure();
@@ -225,18 +298,22 @@ void performOta(String url) {
   HTTPUpdate httpUpdate;
   httpUpdate.rebootOnUpdate(false);
   httpUpdate.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
+  httpUpdate.onProgress(onOtaProgress);
 
   t_httpUpdate_return ret = httpUpdate.update(secureClient, url);
 
   switch (ret) {
     case HTTP_UPDATE_OK:
+      Serial.println("[OTA] success, restarting...");
       flashColor(GREEN, 5);
       ESP.restart();
       break;
     case HTTP_UPDATE_NO_UPDATES:
+      Serial.println("[OTA] no updates");
       flashColor(YELLOW, 3);
       break;
     default:
+      Serial.println("[OTA] failed, error: " + String(httpUpdate.getLastError()) + " " + httpUpdate.getLastErrorString());
       flashColor(RED, 5);
       break;
   }
@@ -259,30 +336,48 @@ void onMessage(char* topic, byte* payload, unsigned int length) {
     return;
   }
 
-  String value = extractValue(message);
-  int presetIndex = findPresetIndex(value);
+  bool isMatch = message.startsWith("match:");
+  String value;
+  if (isMatch) {
+    value = message.substring(6);
+    value.trim();
+  } else {
+    value = extractValue(message);
+  }
 
-  if (presetIndex < 0) {
+  int presetIndex = findPresetIndex(value);
+  int hiddenIndex = findHiddenIndex(value);
+
+  if (presetIndex < 0 && hiddenIndex < 0) {
     flashColor(RED, 2);
     drawPreset(selectedIndex);
     return;
   }
 
-  currentReceivedIndex = presetIndex;
-  receivedAt = millis();
-  displayTtlMs = extractTtlMs(message);
-
-  isShowingReceived = true;
-  blinkVisible = true;
-  lastBlinkAt = millis();
-
-  if (value == "secret_alien") {
-    playSecretAnimation(presetIndex);
-  } else {
-    playReceiveAnimation(presetIndex);
+  if (isMatch && presetIndex >= 0) {
+    playMatchAnimation(presetIndex);
+    currentReceivedIndex = -1;
+    isShowingReceived = false;
+    drawPreset(selectedIndex);
+    return;
   }
 
-  drawPreset(presetIndex);
+  receivedAt = millis();
+  displayTtlMs = extractTtlMs(message);
+  isShowingReceived = true;
+
+  if (presetIndex >= 0) {
+    currentReceivedIndex = presetIndex;
+    currentReceivedHiddenIndex = -1;
+    playReceiveAnimation(presetIndex);
+    drawPreset(presetIndex);
+  } else {
+    currentReceivedIndex = -1;
+    currentReceivedHiddenIndex = hiddenIndex;
+    animateReceive(hiddenPresets[hiddenIndex].pixels);
+    playRainbowOnPixels(hiddenPresets[hiddenIndex].pixels);
+    drawPixels(hiddenPresets[hiddenIndex].pixels);
+  }
 }
 
 // ===== Wi-Fi / MQTT =====
@@ -407,7 +502,15 @@ void connectMqtt() {
   mqtt.setCallback(onMessage);
 
   while (!mqtt.connected()) {
-    M5.dis.fillpix(WHITE);
+    M5.dis.clear();
+    for (int row = 4; row >= 0; row--) {
+      bool leftToRight = (4 - row) % 2 == 0;
+      for (int step = 0; step < 5; step++) {
+        int x = leftToRight ? step : 4 - step;
+        M5.dis.drawpix(row * 5 + x, WHITE);
+        delay(40);
+      }
+    }
 
     String clientId = "atom-friend-light-" + String(random(0xffff), HEX);
 
@@ -426,25 +529,33 @@ void connectMqtt() {
 void selectNextPreset() {
   selectedIndex++;
 
-  if (selectedIndex >= PRESET_COUNT - 1) {
+  if (selectedIndex >= VISIBLE_PRESET_COUNT) {
     selectedIndex = 0;
   }
 
-  currentReceivedIndex = -1;
   isShowingReceived = false;
-  blinkVisible = true;
 
   drawPreset(selectedIndex);
 }
 
 void sendSelectedPreset() {
   int sendingIndex = selectedIndex;
+  bool isMatch = currentReceivedIndex >= 0 && sendingIndex == currentReceivedIndex;
 
   playSendAnimation(sendingIndex);
 
-  bool ok = sendPresetByIndex(sendingIndex);
+  bool ok;
+  if (isMatch) {
+    ok = sendMatch(sendingIndex);
+  } else {
+    ok = sendPresetByIndex(sendingIndex);
+  }
 
-  if (ok) {
+  if (ok && isMatch) {
+    playMatchAnimation(sendingIndex);
+    currentReceivedIndex = -1;
+    isShowingReceived = false;
+  } else if (ok) {
     flashColor(GREEN, 2);
   } else {
     flashColor(RED, 3);
@@ -453,14 +564,30 @@ void sendSelectedPreset() {
   drawPreset(selectedIndex);
 }
 
-void sendEasterEggIfPossible() {
-  bool isAlien = String(presets[selectedIndex].id) == "alien";
+bool sendHiddenPreset(const char* id) {
+  String payload = String("{\"type\":\"preset\",\"value\":\"") + id + "\",\"ttlSec\":1800}";
+  return mqtt.publish(outTopic().c_str(), payload.c_str());
+}
 
+void sendEasterEggIfPossible() {
+  String currentId = String(presets[selectedIndex].id);
+  int hiddenIndex = -1;
   bool ok = false;
 
-  if (isAlien) {
-    playSecretAnimation(selectedIndex);
-    ok = sendSecretAlien();
+  if (currentId == "ramen") {
+    hiddenIndex = findHiddenIndex("donburi");
+  } else if (currentId == "alien") {
+    hiddenIndex = findHiddenIndex("secret_alien");
+  } else if (currentId == "sake") {
+    hiddenIndex = findHiddenIndex("beer");
+  } else if (currentId == "dead") {
+    hiddenIndex = findHiddenIndex("skull");
+  }
+
+  if (hiddenIndex >= 0) {
+    playRainbowOnPixels(hiddenPresets[hiddenIndex].pixels);
+    animateSend(hiddenPresets[hiddenIndex].pixels);
+    ok = sendHiddenPreset(hiddenPresets[hiddenIndex].id);
   } else {
     playSendAnimation(selectedIndex);
     ok = sendPresetByIndex(selectedIndex);
@@ -475,13 +602,84 @@ void sendEasterEggIfPossible() {
   drawPreset(selectedIndex);
 }
 
+// ===== バージョンスクロール =====
+void scrollText(const char* text, uint32_t color) {
+  int charCount = strlen(text);
+  int totalWidth = 0;
+  for (int i = 0; i < charCount; i++) {
+    int fi = fontIndex(text[i]);
+    if (fi < 0) continue;
+    int w = (text[i] == '.') ? 1 : 3;
+    if (totalWidth > 0) totalWidth += 1;
+    totalWidth += w;
+  }
+
+  for (int scroll = 5; scroll >= -totalWidth; scroll--) {
+    M5.dis.clear();
+    int xPos = scroll;
+    for (int c = 0; c < charCount; c++) {
+      int fi = fontIndex(text[c]);
+      if (fi < 0) continue;
+      int charWidth = (text[c] == '.') ? 1 : 3;
+      if (c > 0) xPos += 1;
+      for (int row = 0; row < 5; row++) {
+        for (int col = 0; col < charWidth; col++) {
+          int px = xPos + col;
+          if (px >= 0 && px < 5) {
+            if (font[fi][row] & (1 << (charWidth - 1 - col))) {
+              M5.dis.drawpix(row * 5 + px, color);
+            }
+          }
+        }
+      }
+      xPos += charWidth;
+    }
+    delay(150);
+  }
+}
+
+bool detectShake() {
+  float ax, ay, az;
+  M5.IMU.getAccelData(&ax, &ay, &az);
+  float magnitude = sqrt(ax * ax + ay * ay + az * az);
+  return magnitude > 7.0;
+}
+
+void handleShake() {
+  static unsigned long lastShakeAt = 0;
+  if (detectShake() && millis() - lastShakeAt > 2000) {
+    lastShakeAt = millis();
+    scrollText(FW_VERSION, CYAN);
+    drawPreset(selectedIndex);
+  }
+}
+
+int getHiddenIndexForCurrent() {
+  String currentId = String(presets[selectedIndex].id);
+  if (currentId == "ramen") return findHiddenIndex("donburi");
+  if (currentId == "alien") return findHiddenIndex("secret_alien");
+  if (currentId == "sake") return findHiddenIndex("beer");
+  if (currentId == "dead") return findHiddenIndex("skull");
+  return -1;
+}
+
 void handleButton() {
   static unsigned long pressedAt = 0;
   static bool isPressing = false;
+  static bool hiddenShown = false;
 
   if (M5.Btn.wasPressed()) {
     pressedAt = millis();
     isPressing = true;
+    hiddenShown = false;
+  }
+
+  if (isPressing && !hiddenShown && millis() - pressedAt >= 3000) {
+    int hi = getHiddenIndexForCurrent();
+    if (hi >= 0) {
+      drawPixels(hiddenPresets[hi].pixels);
+    }
+    hiddenShown = true;
   }
 
   if (M5.Btn.wasReleased() && isPressing) {
@@ -501,6 +699,7 @@ void handleButton() {
 
 void setup() {
   M5.begin(true, false, true);
+  M5.IMU.Init();
   randomSeed(millis());
 
   selectDevice();
@@ -520,24 +719,82 @@ void loop() {
   mqtt.loop();
 
   handleButton();
+  handleShake();
 
-  if (isShowingReceived && currentReceivedIndex >= 0) {
-    if (millis() - lastBlinkAt >= BLINK_INTERVAL_MS) {
-      blinkVisible = !blinkVisible;
-      lastBlinkAt = millis();
+  bool hasReceived = currentReceivedIndex >= 0 || currentReceivedHiddenIndex >= 0;
 
-      if (blinkVisible) {
-        drawPreset(currentReceivedIndex);
+  if (isShowingReceived && hasReceived) {
+    float phase = (millis() % BREATH_CYCLE_MS) / (float)BREATH_CYCLE_MS;
+    float brightness = (1.0 + cos(phase * 2.0 * PI)) / 2.0;
+    brightness = 0.15 + brightness * 0.85;
+
+    bool isDonburi = currentReceivedHiddenIndex >= 0 &&
+      String(hiddenPresets[currentReceivedHiddenIndex].id) == "donburi";
+
+    bool isBeer = currentReceivedHiddenIndex >= 0 &&
+      String(hiddenPresets[currentReceivedHiddenIndex].id) == "beer";
+
+    if (isDonburi) {
+      float steamPhase = (millis() % 1000) / 1000.0;
+      bool steamFrame = steamPhase < 0.5;
+      uint32_t steam1 = scaleColor(WHITE, steamFrame ? brightness : 0.0);
+      uint32_t steam2 = scaleColor(WHITE, steamFrame ? 0.0 : brightness);
+      uint32_t bowlColor = scaleColor(RED, brightness);
+      uint32_t px[25] = {
+        steam1,    steam2,    steam1,    steam2,    steam1,
+        steam2,    steam1,    steam2,    steam1,    steam2,
+        bowlColor, bowlColor, bowlColor, bowlColor, bowlColor,
+        OFF,       bowlColor, bowlColor, bowlColor, OFF,
+        OFF,       OFF,       bowlColor, OFF,       OFF
+      };
+      drawPixels(px);
+    } else if (isBeer) {
+      const unsigned long POUR_CYCLE_MS = 4000;
+      unsigned long t = millis() % POUR_CYCLE_MS;
+      int fillLevel;
+      if (t < 3000) {
+        fillLevel = t / 750;
       } else {
-        M5.dis.clear();
+        fillLevel = 4;
       }
+
+      uint32_t Y = scaleColor(YELLOW, brightness);
+      uint32_t W = scaleColor(WHITE, brightness);
+      uint32_t foam = scaleColor(WHITE, brightness);
+      uint32_t liquid = Y;
+      uint32_t empty = OFF;
+
+      uint32_t r0c0 = (fillLevel >= 3) ? Y    : Y;
+      uint32_t r0c1 = (fillLevel >= 3) ? foam : Y;
+      uint32_t r0c2 = (fillLevel >= 3) ? foam : Y;
+      uint32_t r0c3 = (fillLevel >= 3) ? Y    : Y;
+      uint32_t r1c1 = (fillLevel >= 3) ? liquid : empty;
+      uint32_t r1c2 = (fillLevel >= 3) ? liquid : empty;
+      uint32_t r2c1 = (fillLevel >= 2) ? liquid : empty;
+      uint32_t r2c2 = (fillLevel >= 2) ? liquid : empty;
+      uint32_t r3c1 = (fillLevel >= 1) ? liquid : empty;
+      uint32_t r3c2 = (fillLevel >= 1) ? liquid : empty;
+
+      uint32_t px[25] = {
+        r0c0,  r0c1,  r0c2,  r0c3,  OFF,
+        Y,     r1c1,  r1c2,  Y,     W,
+        Y,     r2c1,  r2c2,  Y,     W,
+        Y,     r3c1,  r3c2,  Y,     OFF,
+        Y,     Y,     Y,     Y,     OFF
+      };
+      drawPixels(px);
+    } else {
+      const uint32_t* pixels = (currentReceivedIndex >= 0)
+        ? presets[currentReceivedIndex].pixels
+        : hiddenPresets[currentReceivedHiddenIndex].pixels;
+      drawPixelsBreathing(pixels, brightness);
     }
   }
 
-  if (currentReceivedIndex >= 0 && millis() - receivedAt > displayTtlMs) {
+  if (hasReceived && millis() - receivedAt > displayTtlMs) {
     currentReceivedIndex = -1;
+    currentReceivedHiddenIndex = -1;
     isShowingReceived = false;
-    blinkVisible = true;
     drawPreset(selectedIndex);
   }
 

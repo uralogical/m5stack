@@ -46,20 +46,60 @@ Preset presets[] = {
     PURPLE, PURPLE, PURPLE, PURPLE, PURPLE,
     PURPLE, OFF,    PURPLE, OFF,    PURPLE
   }},
-  { "yeah", "🎶", {
-    OFF,    OFF,    YELLOW, YELLOW, YELLOW,
-    OFF,    OFF,    YELLOW, OFF,    YELLOW,
-    OFF,    OFF,    YELLOW, OFF,    YELLOW,
-    OFF,    YELLOW, YELLOW, OFF,    YELLOW,
-    YELLOW, YELLOW, OFF,    YELLOW, YELLOW
-  }},
+};
+
+const int VISIBLE_PRESET_COUNT = sizeof(presets) / sizeof(presets[0]);
+
+Preset hiddenPresets[] = {
   { "secret_alien", "SECRET", {
     OFF,    PURPLE, PURPLE, PURPLE, OFF,
     PURPLE, WHITE,  OFF,    WHITE,  PURPLE,
     PURPLE, PURPLE, PURPLE, PURPLE, PURPLE,
     PURPLE, PURPLE, PURPLE, PURPLE, PURPLE,
     PURPLE, OFF,    PURPLE, OFF,    PURPLE
+  }},
+  { "beer", "🍺", {
+    YELLOW, YELLOW, YELLOW, YELLOW, OFF,
+    YELLOW, OFF,    OFF,    YELLOW, WHITE,
+    YELLOW, OFF,    OFF,    YELLOW, WHITE,
+    YELLOW, OFF,    OFF,    YELLOW, OFF,
+    YELLOW, YELLOW, YELLOW, YELLOW, OFF
+  }},
+  { "donburi", "🍜", {
+    WHITE, OFF,   WHITE, OFF,   WHITE,
+    OFF,   WHITE, OFF,   WHITE, OFF,
+    RED,   RED,   RED,   RED,   RED,
+    OFF,   RED,   RED,   RED,   OFF,
+    OFF,   OFF,   RED,   OFF,   OFF
+  }},
+  { "skull", "💀", {
+    OFF,   WHITE, WHITE, WHITE, OFF,
+    WHITE, OFF,   WHITE, OFF,   WHITE,
+    WHITE, WHITE, WHITE, WHITE, WHITE,
+    OFF,   WHITE, OFF,   WHITE, OFF,
+    OFF,   OFF,   WHITE, OFF,   OFF
   }}
 };
 
-const int PRESET_COUNT = sizeof(presets) / sizeof(presets[0]);
+const int HIDDEN_PRESET_COUNT = sizeof(hiddenPresets) / sizeof(hiddenPresets[0]);
+
+// ===== スクロール用フォント (3x5) =====
+const uint8_t font[][5] = {
+  {0b111, 0b101, 0b101, 0b101, 0b111}, // 0
+  {0b010, 0b110, 0b010, 0b010, 0b111}, // 1
+  {0b111, 0b001, 0b111, 0b100, 0b111}, // 2
+  {0b111, 0b001, 0b111, 0b001, 0b111}, // 3
+  {0b101, 0b101, 0b111, 0b001, 0b001}, // 4
+  {0b111, 0b100, 0b111, 0b001, 0b111}, // 5
+  {0b111, 0b100, 0b111, 0b101, 0b111}, // 6
+  {0b111, 0b001, 0b010, 0b100, 0b100}, // 7
+  {0b111, 0b101, 0b111, 0b101, 0b111}, // 8
+  {0b111, 0b101, 0b111, 0b001, 0b111}, // 9
+  {0b000, 0b000, 0b000, 0b000, 0b001}, // . (index 10)
+};
+
+int fontIndex(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c == '.') return 10;
+  return -1;
+}
