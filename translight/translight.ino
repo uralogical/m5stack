@@ -9,7 +9,7 @@
 #include "config.h"
 #include "patterns.h"
 
-const char* FW_VERSION = "1.1.3";
+const char* FW_VERSION = "1.1.5";
 const char* OTA_FEED = "translight-ota";
 
 WiFiClient wifiClient;
@@ -128,14 +128,14 @@ void playReceiveAnimation(int index) {
   animateReceive(presets[index].pixels);
 }
 
-void playRainbowOnPixels(const uint32_t* pixels) {
+void playRainbowOnPixels(const uint32_t* pixels, int stepDelayMs = 80) {
   uint32_t rainbow[] = { RED, ORANGE, YELLOW, GREEN, CYAN, BLUE, PURPLE, PINK };
   for (int step = 0; step < 24; step++) {
     uint32_t color = rainbow[step % 8];
     for (int i = 0; i < 25; i++) {
       M5.dis.drawpix(i, pixels[i] != OFF ? color : OFF);
     }
-    delay(80);
+    delay(stepDelayMs);
   }
 }
 
@@ -375,7 +375,7 @@ void onMessage(char* topic, byte* payload, unsigned int length) {
     currentReceivedIndex = -1;
     currentReceivedHiddenIndex = hiddenIndex;
     animateReceive(hiddenPresets[hiddenIndex].pixels);
-    playRainbowOnPixels(hiddenPresets[hiddenIndex].pixels);
+    playRainbowOnPixels(hiddenPresets[hiddenIndex].pixels, 120);
     drawPixels(hiddenPresets[hiddenIndex].pixels);
   }
 }
@@ -749,40 +749,59 @@ void loop() {
       };
       drawPixels(px);
     } else if (isBeer) {
-      const unsigned long POUR_CYCLE_MS = 4000;
+      const unsigned long POUR_CYCLE_MS = 5000;
       unsigned long t = millis() % POUR_CYCLE_MS;
-      int fillLevel;
-      if (t < 3000) {
-        fillLevel = t / 750;
-      } else {
-        fillLevel = 4;
-      }
+      int frame = t / 1000;
 
       uint32_t Y = scaleColor(YELLOW, brightness);
       uint32_t W = scaleColor(WHITE, brightness);
-      uint32_t foam = scaleColor(WHITE, brightness);
-      uint32_t liquid = Y;
-      uint32_t empty = OFF;
 
-      uint32_t r0c0 = (fillLevel >= 3) ? Y    : Y;
-      uint32_t r0c1 = (fillLevel >= 3) ? foam : Y;
-      uint32_t r0c2 = (fillLevel >= 3) ? foam : Y;
-      uint32_t r0c3 = (fillLevel >= 3) ? Y    : Y;
-      uint32_t r1c1 = (fillLevel >= 3) ? liquid : empty;
-      uint32_t r1c2 = (fillLevel >= 3) ? liquid : empty;
-      uint32_t r2c1 = (fillLevel >= 2) ? liquid : empty;
-      uint32_t r2c2 = (fillLevel >= 2) ? liquid : empty;
-      uint32_t r3c1 = (fillLevel >= 1) ? liquid : empty;
-      uint32_t r3c2 = (fillLevel >= 1) ? liquid : empty;
-
-      uint32_t px[25] = {
-        r0c0,  r0c1,  r0c2,  r0c3,  OFF,
-        Y,     r1c1,  r1c2,  Y,     W,
-        Y,     r2c1,  r2c2,  Y,     W,
-        Y,     r3c1,  r3c2,  Y,     OFF,
-        Y,     Y,     Y,     Y,     OFF
-      };
-      drawPixels(px);
+      if (frame == 0) {
+        uint32_t px[25] = {
+          Y, OFF, OFF, Y, OFF,
+          Y, OFF, OFF, Y, W,
+          Y, OFF, OFF, Y, W,
+          Y, OFF, OFF, Y, OFF,
+          Y, Y, Y, Y, OFF
+        };
+        drawPixels(px);
+      } else if (frame == 1) {
+        uint32_t px[25] = {
+          Y, OFF, OFF, Y, OFF,
+          Y, OFF, OFF, Y, W,
+          Y, OFF, OFF, Y, W,
+          Y, Y,   Y,   Y, OFF,
+          Y, Y,   Y,   Y, OFF
+        };
+        drawPixels(px);
+      } else if (frame == 2) {
+        uint32_t px[25] = {
+          Y, OFF, OFF, Y, OFF,
+          Y, OFF, OFF, Y, W,
+          Y, Y,   Y,   Y, W,
+          Y, Y,   Y,   Y, OFF,
+          Y, Y,   Y,   Y, OFF
+        };
+        drawPixels(px);
+      } else if (frame == 3) {
+        uint32_t px[25] = {
+          Y, OFF, OFF, Y, OFF,
+          Y, Y,   Y,   Y, W,
+          Y, Y,   Y,   Y, W,
+          Y, Y,   Y,   Y, OFF,
+          Y, Y,   Y,   Y, OFF
+        };
+        drawPixels(px);
+      } else {
+        uint32_t px[25] = {
+          Y, W,   W,   Y, OFF,
+          Y, Y,   Y,   Y, W,
+          Y, Y,   Y,   Y, W,
+          Y, Y,   Y,   Y, OFF,
+          Y, Y,   Y,   Y, OFF
+        };
+        drawPixels(px);
+      }
     } else {
       const uint32_t* pixels = (currentReceivedIndex >= 0)
         ? presets[currentReceivedIndex].pixels
