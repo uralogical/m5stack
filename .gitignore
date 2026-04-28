@@ -1,0 +1,18 @@
+# macOS
+.DS_Store
+
+# Arduino build
+build/
+*.elf
+*.bin
+*.hex
+
+# Credentials
+config.h
+
+# Sketches with hardcoded credentials
+sketch_wifi/
+sketch_pubsub/
+
+# Libraries (managed by Arduino IDE)
+libraries/
