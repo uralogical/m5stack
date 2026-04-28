@@ -17,7 +17,6 @@ PubSubClient mqtt(wifiClient);
 Preferences prefs;
 
 char deviceId[32] = "";
-char deviceSide[2] = "";
 
 bool isShowingReceived = false;
 bool blinkVisible = true;
@@ -30,14 +29,16 @@ int currentReceivedIndex = -1;
 unsigned long receivedAt = 0;
 unsigned long displayTtlMs = 30UL * 60UL * 1000UL;
 
+bool isSideA() {
+  return String(deviceId) == "masa";
+}
+
 String outFeed() {
-  if (deviceSide[0] == 'a') return "translight-a-to-b";
-  return "translight-b-to-a";
+  return isSideA() ? "translight-m-to-h" : "translight-h-to-m";
 }
 
 String inFeed() {
-  if (deviceSide[0] == 'a') return "translight-b-to-a";
-  return "translight-a-to-b";
+  return isSideA() ? "translight-h-to-m" : "translight-m-to-h";
 }
 
 String outTopic() {
@@ -285,62 +286,115 @@ void onMessage(char* topic, byte* payload, unsigned int length) {
 }
 
 // ===== Wi-Fi / MQTT =====
-void loadDeviceConfig() {
+void loadDeviceId() {
   prefs.begin("translight", true);
   String id = prefs.getString("deviceId", "");
-  String side = prefs.getString("side", "");
   prefs.end();
 
   id.toCharArray(deviceId, sizeof(deviceId));
-  side.toCharArray(deviceSide, sizeof(deviceSide));
 }
 
-void saveDeviceConfig(const char* id, const char* side) {
+void saveDeviceId(const char* id) {
   strncpy(deviceId, id, sizeof(deviceId) - 1);
-  strncpy(deviceSide, side, sizeof(deviceSide) - 1);
 
   prefs.begin("translight", false);
-  prefs.putString("deviceId", deviceId);
-  prefs.putString("side", deviceSide);
+  prefs.putString("deviceId", id);
   prefs.end();
 }
 
-void connectWiFi() {
-  M5.dis.fillpix(BLUE);
+void drawName(const char* name) {
+  M5.dis.clear();
+  if (String(name) == "masa") {
+    uint32_t px[25] = {
+      GREEN, OFF,   OFF,   OFF,   GREEN,
+      GREEN, GREEN, OFF,   GREEN, GREEN,
+      GREEN, OFF,   GREEN, OFF,   GREEN,
+      GREEN, OFF,   OFF,   OFF,   GREEN,
+      GREEN, OFF,   OFF,   OFF,   GREEN
+    };
+    for (int i = 0; i < 25; i++) M5.dis.drawpix(i, px[i]);
+  } else {
+    uint32_t px[25] = {
+      BLUE, OFF,  OFF,  OFF,  BLUE,
+      BLUE, OFF,  OFF,  OFF,  BLUE,
+      BLUE, BLUE, BLUE, BLUE, BLUE,
+      BLUE, OFF,  OFF,  OFF,  BLUE,
+      BLUE, OFF,  OFF,  OFF,  BLUE
+    };
+    for (int i = 0; i < 25; i++) M5.dis.drawpix(i, px[i]);
+  }
+}
 
-  loadDeviceConfig();
+void selectDevice() {
+  loadDeviceId();
+  if (strlen(deviceId) > 0) return;
+
+  const char* names[] = { "masa", "haru" };
+  int current = 0;
+
+  drawName(names[current]);
+
+  while (true) {
+    M5.update();
+
+    if (M5.Btn.wasPressed()) {
+      unsigned long pressedAt = millis();
+
+      while (!M5.Btn.wasReleased()) {
+        M5.update();
+        delay(10);
+      }
+
+      unsigned long duration = millis() - pressedAt;
+
+      if (duration < 1000) {
+        current = 1 - current;
+        drawName(names[current]);
+      } else {
+        saveDeviceId(names[current]);
+        flashColor(GREEN, 3);
+        return;
+      }
+    }
+
+    delay(20);
+  }
+}
+
+void drawWifiIcon() {
+  const uint32_t W = BLUE;
+  const uint32_t _ = OFF;
+  uint32_t icon[25] = {
+    _, W, W, W, _,
+    W, _, _, _, W,
+    _, _, W, _, _,
+    _, W, _, W, _,
+    _, _, W, _, _
+  };
+  for (int i = 0; i < 25; i++) M5.dis.drawpix(i, icon[i]);
+}
+
+void connectWiFi() {
+  drawWifiIcon();
 
   WiFiManager wm;
-
-  WiFiManagerParameter paramId("device_id", "名前 (例: masa)", deviceId, 31);
-  WiFiManagerParameter paramSide("side", "側 (a または b)", deviceSide, 1);
-  wm.addParameter(&paramId);
-  wm.addParameter(&paramSide);
 
   M5.update();
   if (M5.Btn.isPressed()) {
     M5.dis.fillpix(PURPLE);
     delay(1000);
-
     wm.resetSettings();
-
+    prefs.begin("translight", false);
+    prefs.clear();
+    prefs.end();
     flashColor(PURPLE, 2);
+    ESP.restart();
   }
 
-  bool needsPortal = strlen(deviceId) == 0 || strlen(deviceSide) == 0;
-
-  String apName = String("Translight-Setup");
-  bool ok;
-
-  if (needsPortal) {
-    ok = wm.startConfigPortal(apName.c_str());
-  } else {
-    apName = String("Translight-") + deviceId;
-    ok = wm.autoConnect(apName.c_str());
-  }
+  String apName = String("Translight-") + deviceId;
+  bool ok = wm.autoConnect(apName.c_str());
 
   if (ok) {
-    saveDeviceConfig(paramId.getValue(), paramSide.getValue());
     flashColor(GREEN, 1);
   } else {
     flashColor(RED, 3);
@@ -449,6 +503,7 @@ void setup() {
   M5.begin(true, false, true);
   randomSeed(millis());
 
+  selectDevice();
   connectWiFi();
   connectMqtt();
 
