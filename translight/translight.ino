@@ -1,13 +1,23 @@
 #include <M5Atom.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <PubSubClient.h>
 #include <WiFiManager.h>
+#include <HTTPUpdate.h>
+#include <Preferences.h>
 
 #include "config.h"
 #include "patterns.h"
 
+const char* FW_VERSION = "1.0.0";
+const char* OTA_FEED = "translight-ota";
+
 WiFiClient wifiClient;
 PubSubClient mqtt(wifiClient);
+Preferences prefs;
+
+char deviceId[32] = "";
+char deviceSide[2] = "";
 
 bool isShowingReceived = false;
 bool blinkVisible = true;
@@ -20,12 +30,22 @@ int currentReceivedIndex = -1;
 unsigned long receivedAt = 0;
 unsigned long displayTtlMs = 30UL * 60UL * 1000UL;
 
+String outFeed() {
+  if (deviceSide[0] == 'a') return "translight-a-to-b";
+  return "translight-b-to-a";
+}
+
+String inFeed() {
+  if (deviceSide[0] == 'a') return "translight-b-to-a";
+  return "translight-a-to-b";
+}
+
 String outTopic() {
-  return String(IO_USERNAME) + "/feeds/" + OUT_FEED;
+  return String(IO_USERNAME) + "/feeds/" + outFeed();
 }
 
 String inTopic() {
-  return String(IO_USERNAME) + "/feeds/" + IN_FEED;
+  return String(IO_USERNAME) + "/feeds/" + inFeed();
 }
 
 // ===== 表示 =====
@@ -187,12 +207,55 @@ bool sendSecretAlien() {
   return mqtt.publish(outTopic().c_str(), payload.c_str());
 }
 
+// ===== OTA =====
+String otaTopic() {
+  return String(IO_USERNAME) + "/feeds/" + OTA_FEED;
+}
+
+void performOta(String url) {
+  url.trim();
+  if (url.length() == 0) return;
+
+  M5.dis.fillpix(CYAN);
+
+  WiFiClientSecure secureClient;
+  secureClient.setInsecure();
+
+  HTTPUpdate httpUpdate;
+  httpUpdate.rebootOnUpdate(false);
+  httpUpdate.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
+
+  t_httpUpdate_return ret = httpUpdate.update(secureClient, url);
+
+  switch (ret) {
+    case HTTP_UPDATE_OK:
+      flashColor(GREEN, 5);
+      ESP.restart();
+      break;
+    case HTTP_UPDATE_NO_UPDATES:
+      flashColor(YELLOW, 3);
+      break;
+    default:
+      flashColor(RED, 5);
+      break;
+  }
+
+  drawPreset(selectedIndex);
+}
+
 // ===== MQTT受信 =====
 void onMessage(char* topic, byte* payload, unsigned int length) {
   String message = "";
 
   for (unsigned int i = 0; i < length; i++) {
     message += (char)payload[i];
+  }
+
+  if (String(topic) == otaTopic()) {
+    String url = extractValue(message);
+    if (url.length() == 0) url = message;
+    performOta(url);
+    return;
   }
 
   String value = extractValue(message);
@@ -222,12 +285,38 @@ void onMessage(char* topic, byte* payload, unsigned int length) {
 }
 
 // ===== Wi-Fi / MQTT =====
+void loadDeviceConfig() {
+  prefs.begin("translight", true);
+  String id = prefs.getString("deviceId", "");
+  String side = prefs.getString("side", "");
+  prefs.end();
+
+  id.toCharArray(deviceId, sizeof(deviceId));
+  side.toCharArray(deviceSide, sizeof(deviceSide));
+}
+
+void saveDeviceConfig(const char* id, const char* side) {
+  strncpy(deviceId, id, sizeof(deviceId) - 1);
+  strncpy(deviceSide, side, sizeof(deviceSide) - 1);
+
+  prefs.begin("translight", false);
+  prefs.putString("deviceId", deviceId);
+  prefs.putString("side", deviceSide);
+  prefs.end();
+}
+
 void connectWiFi() {
   M5.dis.fillpix(BLUE);
 
+  loadDeviceConfig();
+
   WiFiManager wm;
 
-  // 起動時にボタンを押していたらWi-Fi設定リセット
+  WiFiManagerParameter paramId("device_id", "名前 (例: masa)", deviceId, 31);
+  WiFiManagerParameter paramSide("side", "側 (a または b)", deviceSide, 1);
+  wm.addParameter(&paramId);
+  wm.addParameter(&paramSide);
+
   M5.update();
   if (M5.Btn.isPressed()) {
     M5.dis.fillpix(PURPLE);
@@ -238,11 +327,20 @@ void connectWiFi() {
     flashColor(PURPLE, 2);
   }
 
-  String apName = String("Translight-") + DEVICE_ID;
+  bool needsPortal = strlen(deviceId) == 0 || strlen(deviceSide) == 0;
 
-  bool ok = wm.autoConnect(apName.c_str());
+  String apName = String("Translight-Setup");
+  bool ok;
+
+  if (needsPortal) {
+    ok = wm.startConfigPortal(apName.c_str());
+  } else {
+    apName = String("Translight-") + deviceId;
+    ok = wm.autoConnect(apName.c_str());
+  }
 
   if (ok) {
+    saveDeviceConfig(paramId.getValue(), paramSide.getValue());
     flashColor(GREEN, 1);
   } else {
     flashColor(RED, 3);
@@ -261,6 +359,7 @@ void connectMqtt() {
 
     if (mqtt.connect(clientId.c_str(), IO_USERNAME, IO_KEY)) {
       mqtt.subscribe(inTopic().c_str());
+      mqtt.subscribe(otaTopic().c_str());
       flashColor(GREEN, 1);
     } else {
       flashColor(RED, 2);
